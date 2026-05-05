@@ -12,12 +12,11 @@
 //! - `GET /.well-known/x402`: machine-readable Bazaar discovery manifest.
 //! - `POST /ntt` without `X-Payment`: `402 Payment Required` with x402 envelope.
 //! - `POST /ntt` with `X-Payment`: awaits [`crate::x402::verify_async`] against
-//!   the CDP Solana facilitator, then forwards request bytes into
-//!   [`crate::handler::serve`].  On compute success, awaits
-//!   [`crate::x402::settle_async`] and returns the tx signature in the
-//!   `X-Payment-Response` header.  v0.1 stubs in `serve` still return
-//!   `501 Not Implemented` until step 4 wires the parse and response
-//!   pipeline; step 3 only proves the verify and settle plumbing.
+//!   the CDP Solana facilitator, runs the full [`crate::handler::serve`]
+//!   pipeline (parse + tier-quote + Goldilocks NTT + JSON response),
+//!   then awaits [`crate::x402::settle_async`].  Returns the NTT result
+//!   bytes with the on-chain settlement signature in the
+//!   `X-Payment-Response` header.
 
 use crate::error::{Error, SettlementError};
 use crate::handler::serve;
@@ -131,7 +130,8 @@ async fn after_verify(
     seller: &SellerPubkey,
 ) -> WorkerResult<Response> {
     let body = read_request_body(req).await?;
-    let serve_result = serve(RequestBytes::new(body)).run();
+    let request_bytes = RequestBytes::new(body);
+    let serve_result = serve(&request_bytes).run();
     match serve_result {
         Ok(response_bytes) => {
             let settled = settle_async(facilitator, envelope, seller).await;
