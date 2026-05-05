@@ -1,5 +1,7 @@
-/target
-/programs/*/target
+# Cargo build artifacts.  `**/target/` catches both the workspace
+# root target and the worker/target/ created when worker-build is run
+# with CARGO_TARGET_DIR=target from inside worker/.
+**/target/
 **/*.rs.bk
 .DS_Store
 
