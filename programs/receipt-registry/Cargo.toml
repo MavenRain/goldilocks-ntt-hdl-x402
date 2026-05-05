@@ -1,0 +1,24 @@
+[package]
+name = "receipt-registry"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Solana-devnet program that emits per-call NTT receipt events for the goldilocks-ntt-hdl-x402 wrapper."
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "receipt_registry"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+
+[dependencies]
+anchor-lang = "0.30"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

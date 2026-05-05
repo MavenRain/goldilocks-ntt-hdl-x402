@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["worker"]
+exclude = [
+    "programs/receipt-registry",
+    "programs/donor-registry",
+    "programs/pricing-schedule",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/MavenRain/goldilocks-ntt-hdl-x402"
+authors = ["Onyeka Obi"]
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+needless_pass_by_value = "warn"
+manual_map = "warn"

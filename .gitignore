@@ -1,0 +1,18 @@
+/target
+/programs/*/target
+**/*.rs.bk
+.DS_Store
+
+# Cloudflare Workers
+.wrangler/
+.dev.vars
+node_modules/
+
+# Anchor
+.anchor/
+test-ledger/
+
+# Verilator-WASM build artifacts
+/scripts/build/
+*.wasm
+!worker/src/backend/ntt_rtl.wasm.placeholder

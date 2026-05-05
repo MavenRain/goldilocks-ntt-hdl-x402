@@ -1,0 +1,27 @@
+name = "ntt-x402"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-05-01"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[vars]
+SOLANA_RPC_URL = "https://api.devnet.solana.com"
+SOLANA_CLUSTER = "devnet"
+RECEIPT_REGISTRY_PROGRAM_ID = "Recpt11111111111111111111111111111111111111"
+DONOR_REGISTRY_PROGRAM_ID = "Dnr11111111111111111111111111111111111111111"
+PRICING_SCHEDULE_PROGRAM_ID = "Prc11111111111111111111111111111111111111111"
+FACILITATOR_URL = "https://api.cdp.coinbase.com/x402/solana/v1"
+MAX_DEGREE_LOG2 = "12"
+
+# Custom domain via Spaceship-managed CNAME pointing ntt.isurvivable.cv
+# at this Worker's *.workers.dev hostname. No registrar or nameserver
+# transfer required; just add the CNAME record at Spaceship.
+[[routes]]
+pattern = "ntt.isurvivable.cv/*"
+custom_domain = true
+
+# Secrets (set via `wrangler secret put`):
+#   SOLANA_SIGNER_KEY     base58-encoded ed25519 keypair for receipt writes
+#   FAUCET_API_KEY        optional CDP faucet API key for unattended airdrop pulls
+#   SELLER_PUBKEY         base58 mainnet pubkey that receives USDC settlements

@@ -1,0 +1,24 @@
+[package]
+name = "donor-registry"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Solana-devnet program that maintains the donor mesh PDA registry and computes on-chain revenue splits."
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "donor_registry"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+
+[dependencies]
+anchor-lang = "0.30"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
