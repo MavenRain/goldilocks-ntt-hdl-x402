@@ -1,28 +1,35 @@
 //! Cloudflare Workers `#[event(fetch)]` shim.
 //!
 //! This is the single boundary that bridges async I/O (Workers
-//! request handling, Solana RPC, x402 facilitator HTTP) to the
-//! synchronous `Io`-pure core in [`crate::handler`] and friends.  All
-//! `Io` pipelines are run exactly once per request, satisfying the
-//! delay-`run` rule from `CLAUDE.md`.
+//! request handling, x402 facilitator HTTP, eventual Solana RPC) to
+//! the synchronous `Io`-pure core in [`crate::handler`] and friends.
+//! All `Io` pipelines are run exactly once per request, satisfying
+//! the delay-`run` rule from `CLAUDE.md`.
 //!
 //! Routing surface in v0.1:
 //!
 //! - `GET /`: human-readable JSON service descriptor.
 //! - `GET /.well-known/x402`: machine-readable Bazaar discovery manifest.
 //! - `POST /ntt` without `X-Payment`: `402 Payment Required` with x402 envelope.
-//! - `POST /ntt` with `X-Payment`: forwards request bytes into
-//!   [`crate::handler::serve`].  v0.1 stubs return `501 Not Implemented` until
-//!   the compute, verify, and settle subsystems land.
+//! - `POST /ntt` with `X-Payment`: awaits [`crate::x402::verify_async`] against
+//!   the CDP Solana facilitator, then forwards request bytes into
+//!   [`crate::handler::serve`].  On compute success, awaits
+//!   [`crate::x402::settle_async`] and returns the tx signature in the
+//!   `X-Payment-Response` header.  v0.1 stubs in `serve` still return
+//!   `501 Not Implemented` until step 4 wires the parse and response
+//!   pipeline; step 3 only proves the verify and settle plumbing.
 
-use crate::error::Error;
+use crate::error::{Error, SettlementError};
 use crate::handler::serve;
-use crate::types::RequestBytes;
+use crate::types::{NttCallPriceMicrosUsdc, RequestBytes, SellerPubkey};
+use crate::x402::{FacilitatorUrl, PaymentEnvelope, settle_async, verify_async};
 use alloc::format;
 use alloc::string::{String, ToString};
 use worker::{Context, Env, Request, Response, Result as WorkerResult, event};
 
 const X_PAYMENT_HEADER: &str = "X-Payment";
+const X_PAYMENT_RESPONSE_HEADER: &str = "X-Payment-Response";
+const FREE_TIER_MAX_MICROS_USDC: u64 = 10_000;
 
 const SERVICE_DESCRIPTOR: &str = r#"{
   "service": "ntt-x402",
@@ -66,18 +73,18 @@ const BAZAAR_MANIFEST: &str = r#"{
 /// converted to HTTP responses via [`error_status_and_body`] and
 /// returned as `Ok(Response)`.
 #[event(fetch)]
-pub async fn fetch(req: Request, _env: Env, _ctx: Context) -> WorkerResult<Response> {
+pub async fn fetch(req: Request, env: Env, _ctx: Context) -> WorkerResult<Response> {
     console_error_panic_hook::set_once();
-    dispatch(req).await
+    dispatch(req, env).await
 }
 
-async fn dispatch(req: Request) -> WorkerResult<Response> {
+async fn dispatch(req: Request, env: Env) -> WorkerResult<Response> {
     let path = req.path();
     let method = req.method();
     match (method, path.as_str()) {
         (worker::Method::Get, "/") => json_ok(SERVICE_DESCRIPTOR),
         (worker::Method::Get, "/.well-known/x402") => json_ok(BAZAAR_MANIFEST),
-        (worker::Method::Post, "/ntt") => handle_ntt(req).await,
+        (worker::Method::Post, "/ntt") => handle_ntt(req, &env).await,
         (
             worker::Method::Get
             | worker::Method::Post
@@ -93,32 +100,88 @@ async fn dispatch(req: Request) -> WorkerResult<Response> {
     }
 }
 
-async fn handle_ntt(mut req: Request) -> WorkerResult<Response> {
-    let payment_present = req.headers().get(X_PAYMENT_HEADER).ok().flatten().is_some();
-    if payment_present {
-        req.bytes().await.and_then(run_serve_pipeline)
-    } else {
-        respond_payment_required()
+async fn handle_ntt(req: Request, env: &Env) -> WorkerResult<Response> {
+    let payment_value = req.headers().get(X_PAYMENT_HEADER).ok().flatten();
+    match payment_value {
+        Some(envelope_b64) => settle_and_serve(req, env, envelope_b64).await,
+        None => respond_payment_required(),
     }
 }
 
-fn run_serve_pipeline(body: alloc::vec::Vec<u8>) -> WorkerResult<Response> {
-    serve(RequestBytes::new(body))
-        .run()
-        .map_err(|e| error_to_worker_error(&e))
-        .and_then(|response_bytes| {
-            Response::from_bytes(response_bytes.into_inner())
-                .map(|r| r.with_headers(json_headers()))
-        })
-        .or_else(|_| {
-            Response::error("internal: response build failed", 500)
-                .map(|r| r.with_headers(json_headers()))
-        })
+async fn settle_and_serve(req: Request, env: &Env, envelope_b64: String) -> WorkerResult<Response> {
+    let config = read_settlement_config(env);
+    match config {
+        Ok((facilitator, seller)) => {
+            let envelope = PaymentEnvelope::new(envelope_b64);
+            let expected = NttCallPriceMicrosUsdc::new(FREE_TIER_MAX_MICROS_USDC);
+            let verified = verify_async(&facilitator, &envelope, expected, &seller).await;
+            match verified {
+                Ok(()) => after_verify(req, &facilitator, &envelope, &seller).await,
+                Err(e) => domain_error_response(&e),
+            }
+        }
+        Err(e) => domain_error_response(&e),
+    }
 }
 
-fn error_to_worker_error(err: &Error) -> worker::Error {
+async fn after_verify(
+    req: Request,
+    facilitator: &FacilitatorUrl,
+    envelope: &PaymentEnvelope,
+    seller: &SellerPubkey,
+) -> WorkerResult<Response> {
+    let body = read_request_body(req).await?;
+    let serve_result = serve(RequestBytes::new(body)).run();
+    match serve_result {
+        Ok(response_bytes) => {
+            let settled = settle_async(facilitator, envelope, seller).await;
+            match settled {
+                Ok(tx) => Response::from_bytes(response_bytes.into_inner()).map(|r| {
+                    r.with_headers(payment_response_headers(&payment_response_value(&tx)))
+                }),
+                Err(e) => domain_error_response(&e),
+            }
+        }
+        Err(e) => domain_error_response(&e),
+    }
+}
+
+// FFI carve-out: `worker::Request::bytes` is `&mut self`, so
+// reading the body forces `let mut`.  The mutation is quarantined
+// to this helper, parallel to the kan-hunt-anchor-runner
+// solana-program-test exception documented in CLAUDE.md.
+async fn read_request_body(mut req: Request) -> WorkerResult<alloc::vec::Vec<u8>> {
+    req.bytes().await
+}
+
+fn read_settlement_config(env: &Env) -> Result<(FacilitatorUrl, SellerPubkey), Error> {
+    let facilitator = env
+        .var("FACILITATOR_URL")
+        .map_err(|e| {
+            Error::Settlement(SettlementError::Transport(format!(
+                "FACILITATOR_URL var: {e}"
+            )))
+        })?
+        .to_string();
+    let seller = env
+        .var("SELLER_PUBKEY")
+        .map_err(|e| {
+            Error::Settlement(SettlementError::Transport(format!(
+                "SELLER_PUBKEY var: {e}"
+            )))
+        })?
+        .to_string();
+    Ok((FacilitatorUrl::new(facilitator), SellerPubkey::new(seller)))
+}
+
+fn payment_response_value(tx: &crate::types::PaymentTxHash) -> String {
+    let signature_b58 = bs58::encode(tx.as_bytes()).into_string();
+    format!(r#"{{"network":"solana","transaction":"{signature_b58}"}}"#)
+}
+
+fn domain_error_response(err: &Error) -> WorkerResult<Response> {
     let (status, body) = error_status_and_body(err);
-    worker::Error::RustError(format!("{status} {body}"))
+    Response::error(body, status).map(|r| r.with_headers(json_headers()))
 }
 
 fn error_status_and_body(err: &Error) -> (u16, String) {
@@ -154,12 +217,21 @@ fn json_ok(body: &str) -> WorkerResult<Response> {
     Response::ok(body.to_string()).map(|r| r.with_headers(json_headers()))
 }
 
-// FFI carve-out: `worker::Headers::append` is `&mut self`.  This is
-// the sole `let mut` in the worker crate, parallel to the
-// kan-hunt-anchor-runner solana-program-test exception.
 fn json_headers() -> worker::Headers {
-    let mut h = worker::Headers::new();
-    let _ = h.append("Content-Type", "application/json");
-    let _ = h.append("X-Service", "ntt-x402");
-    h
+    [
+        ("Content-Type", "application/json"),
+        ("X-Service", "ntt-x402"),
+    ]
+    .into_iter()
+    .collect()
+}
+
+fn payment_response_headers(payment_response: &str) -> worker::Headers {
+    [
+        ("Content-Type", "application/json"),
+        ("X-Service", "ntt-x402"),
+        (X_PAYMENT_RESPONSE_HEADER, payment_response),
+    ]
+    .into_iter()
+    .collect()
 }

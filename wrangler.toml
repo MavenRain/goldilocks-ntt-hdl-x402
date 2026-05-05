@@ -11,7 +11,13 @@ SOLANA_CLUSTER = "devnet"
 RECEIPT_REGISTRY_PROGRAM_ID = "Recpt11111111111111111111111111111111111111"
 DONOR_REGISTRY_PROGRAM_ID = "Dnr11111111111111111111111111111111111111111"
 PRICING_SCHEDULE_PROGRAM_ID = "Prc11111111111111111111111111111111111111111"
-FACILITATOR_URL = "https://api.cdp.coinbase.com/x402/solana/v1"
+# v0.1 ships against the CDP Solana-devnet facilitator so the first
+# paid call can be smoke-tested against real x402 plumbing without
+# touching mainnet USDC.  Flip to the mainnet facilitator
+# (https://api.cdp.coinbase.com/x402/solana/v1) only after end-to-end
+# devnet runs are clean.
+FACILITATOR_URL = "https://api.cdp.coinbase.com/x402/solana-devnet/v1"
+SELLER_PUBKEY = "11111111111111111111111111111111"
 MAX_DEGREE_LOG2 = "12"
 
 # Custom domain via Spaceship-managed CNAME pointing ntt.isurvivable.cv

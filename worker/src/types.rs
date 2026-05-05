@@ -4,6 +4,7 @@
 //! `String` crosses a public boundary.
 
 use crate::error::ParseError;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Polynomial degree expressed as `log2(n)`.  Confined to `[1, 30]`.
@@ -331,6 +332,22 @@ impl Receipt {
     #[must_use]
     pub const fn backend(&self) -> Backend {
         self.backend
+    }
+}
+
+/// Solana base58 pubkey of the seller wallet that receives USDC.
+#[derive(Debug, Clone)]
+pub struct SellerPubkey(String);
+
+impl SellerPubkey {
+    #[must_use]
+    pub const fn new(base58: String) -> Self {
+        Self(base58)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
