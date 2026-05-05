@@ -26,7 +26,7 @@ serde_json = { version = "1", default-features = false, features = ["alloc"] }
 # `worker-build --release`, which sets the target to
 # `wasm32-unknown-unknown` automatically.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-worker = "0.5"
+worker = "0.8"
 console_error_panic_hook = "0.1"
 
 [lib]

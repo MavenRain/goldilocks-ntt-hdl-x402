@@ -93,7 +93,8 @@ async fn dispatch(req: Request, env: Env) -> WorkerResult<Response> {
             | worker::Method::Options
             | worker::Method::Patch
             | worker::Method::Connect
-            | worker::Method::Trace,
+            | worker::Method::Trace
+            | worker::Method::Report,
             _,
         ) => Response::error("not found", 404),
     }

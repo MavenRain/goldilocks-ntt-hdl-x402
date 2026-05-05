@@ -41,9 +41,10 @@ facilitator eats gas), compute on Cloudflare Workers free tier.
 
 ```text
 /Cargo.toml              workspace root (worker member only)
-/wrangler.toml           Cloudflare Workers deployment
 /Anchor.toml             Solana devnet program registry
 /worker/                 Rust crate compiled to wasm32 for CF Workers
+  wrangler.toml          Cloudflare Workers deployment (sits next to Cargo.toml so
+                         worker-build can read the [package] manifest)
 /programs/               Anchor programs deployed to Solana devnet
   receipt-registry/      per-call receipts as on-chain events
   donor-registry/        donor URLs + revenue-share PDAs
@@ -96,7 +97,11 @@ not change.
 
 ### Deploy a new version
 
+`wrangler.toml` lives in `worker/` next to the package manifest, so
+`wrangler` and `worker-build` are run from there:
+
 ```bash
+cd worker
 wrangler deploy
 ```
 
@@ -110,6 +115,7 @@ end-to-end runs are clean.
 ### Local smoke test
 
 ```bash
+cd worker
 wrangler dev
 # in another shell
 curl -i http://localhost:8787/                          # service descriptor
