@@ -13,6 +13,9 @@ workspace = true
 
 [dependencies]
 comp-cat-rs = { path = "../../comp-cat-rs" }
+p3-field = "0.5"
+p3-goldilocks = "0.5"
+sha2 = { version = "0.11", default-features = false }
 
 # Cloudflare Workers runtime is only present on the wasm32 target so
 # `cargo check` on the host (macOS, Linux) keeps working for unit

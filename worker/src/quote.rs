@@ -25,7 +25,7 @@ use crate::types::{MaxDegreeLog2, NttCallPriceMicrosUsdc, PolyDegreeLog2};
 /// let degree = PolyDegreeLog2::new(8).map_err(|_| ())?;
 /// let cap = MaxDegreeLog2::new(12);
 /// let price = quote_for(degree, cap).map_err(|_| ())?;
-/// assert_eq!(price.get(), 1_000);
+/// (price.get() == 1_000).then_some(()).ok_or(())?;
 /// # Ok::<(), ()>(())
 /// ```
 pub fn quote_for(
@@ -50,26 +50,26 @@ const fn price_micros_for(degree_log2: u8) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::ParseError;
+    use alloc::format;
+    use alloc::string::{String, ToString};
 
     #[test]
-    fn small_degree_costs_one_milliusdc() -> Result<(), ParseError> {
-        let d = PolyDegreeLog2::new(8)?;
+    fn small_degree_costs_one_milliusdc() -> Result<(), String> {
+        let d = PolyDegreeLog2::new(8).map_err(|e| format!("degree: {e}"))?;
         let cap = MaxDegreeLog2::new(12);
-        quote_for(d, cap)
-            .map(|p| {
-                assert_eq!(p.get(), 1_000);
-            })
-            .map_err(|_| ParseError::DegreeOutOfRange(8))
+        let price = quote_for(d, cap).map_err(|e| format!("quote: {e}"))?;
+        (price.get() == 1_000)
+            .then_some(())
+            .ok_or_else(|| format!("expected 1000 micros, got {}", price.get()))
     }
 
     #[test]
-    fn requesting_above_cap_rejects() -> Result<(), ParseError> {
-        let d = PolyDegreeLog2::new(20)?;
+    fn requesting_above_cap_rejects() -> Result<(), String> {
+        let d = PolyDegreeLog2::new(20).map_err(|e| format!("degree: {e}"))?;
         let cap = MaxDegreeLog2::new(12);
         quote_for(d, cap)
             .err()
             .map(|_| ())
-            .ok_or(ParseError::DegreeOutOfRange(20))
+            .ok_or_else(|| "expected out-of-tier error".to_string())
     }
 }
