@@ -21,7 +21,7 @@
 //!   donor mesh (v0.2) and cloud FPGA (v0.3) follow.
 //! - [`faucet`]: devnet airdrop puller.
 
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(all(not(test), not(target_arch = "wasm32")), no_std)]
 #![allow(clippy::module_name_repetitions)]
 
 extern crate alloc;
@@ -34,3 +34,6 @@ pub mod quote;
 pub mod registry;
 pub mod types;
 pub mod x402;
+
+#[cfg(target_arch = "wasm32")]
+pub mod edge;

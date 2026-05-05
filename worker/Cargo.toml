@@ -14,5 +14,14 @@ workspace = true
 [dependencies]
 comp-cat-rs = { path = "../../comp-cat-rs" }
 
+# Cloudflare Workers runtime is only present on the wasm32 target so
+# `cargo check` on the host (macOS, Linux) keeps working for unit
+# tests of the Io-pure core.  Building for deploy is done by
+# `worker-build --release`, which sets the target to
+# `wasm32-unknown-unknown` automatically.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+worker = "0.5"
+console_error_panic_hook = "0.1"
+
 [lib]
 crate-type = ["cdylib", "rlib"]
