@@ -60,7 +60,7 @@ status: 200 (1240 ms)
 X-Payment-Response: {"network":"solana","transaction":"<base58 sig>"}
 body:
 {
-  "output": [10, 17893154141548748664, ...],
+  "output": ["10", "18446744069414584319", ...],
   "proof_of_execution": "<64 hex chars>",
   "backend": "Wasm",
   "field": "Goldilocks",
@@ -68,6 +68,13 @@ body:
   "degree_log2": 2
 }
 ```
+
+`output` entries are JSON strings (not bare numbers) because Goldilocks
+values can exceed JavaScript's safe-integer range (2^53 - 1).  Parse them
+with `BigInt(s)` when you need to do arithmetic; treat them as opaque
+labels otherwise.  The `proof_of_execution` digest is invariant under
+this encoding because it's computed over the canonical u64 little-endian
+bytes, not the JSON serialization.
 
 The first call is slower (~1-2 s) because Cloudflare Workers cold-starts
 the WASM module; subsequent calls drop to sub-200 ms.

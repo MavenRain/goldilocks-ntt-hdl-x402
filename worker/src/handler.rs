@@ -140,10 +140,17 @@ fn parse_coefficients(json: &serde_json::Value) -> Result<Vec<u64>, ParseError> 
 #[must_use]
 pub fn build_response_bytes(req: &NttRequest, outcome: &ComputeOutcome) -> ResponseBytes {
     let proof_hex = hex_encode(outcome.proof().as_bytes());
+    // Emit each Goldilocks/BabyBear output as a JSON string so JS
+    // clients can parse with BigInt without precision loss.  u64
+    // values exceed JS Number's safe-integer range (2^53 - 1), and
+    // bare numerics get silently rounded.  The proof_of_execution
+    // digest is invariant under this change because it's computed
+    // over the canonical u64 little-endian bytes, not the JSON
+    // serialization.
     let outputs = outcome
         .output()
         .iter()
-        .map(u64::to_string)
+        .map(|x| format!(r#""{x}""#))
         .collect::<Vec<_>>()
         .join(",");
     let backend_tag = backend_tag(outcome.backend());
@@ -347,7 +354,11 @@ mod tests {
             .ok_or_else(|| "no output array".to_string())
             .and_then(|arr| {
                 arr.iter()
-                    .map(|n| n.as_u64().ok_or_else(|| "non-u64 output".to_string()))
+                    .map(|n| {
+                        n.as_str()
+                            .ok_or_else(|| "non-string output entry".to_string())
+                            .and_then(|s| s.parse::<u64>().map_err(|e| format!("u64 parse: {e}")))
+                    })
                     .collect()
             })
     }
