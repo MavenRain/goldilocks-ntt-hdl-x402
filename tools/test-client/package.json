@@ -1,0 +1,21 @@
+{
+  "name": "ntt-x402-test-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Smoke-test buyer for the ntt-x402 worker.  Signs a devnet USDC envelope with @x402/svm and hits POST /ntt via @x402/fetch.",
+  "license": "MIT OR Apache-2.0",
+  "scripts": {
+    "start": "tsx test-paid-call.ts"
+  },
+  "dependencies": {
+    "@solana/kit": "^6",
+    "@x402/fetch": "^2",
+    "@x402/svm": "^2",
+    "@scure/base": "^2"
+  },
+  "devDependencies": {
+    "tsx": "^4",
+    "typescript": "^5"
+  }
+}

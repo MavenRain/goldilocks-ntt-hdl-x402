@@ -17,6 +17,7 @@ p3-field = "0.5"
 p3-goldilocks = "0.5"
 sha2 = { version = "0.11", default-features = false }
 bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 

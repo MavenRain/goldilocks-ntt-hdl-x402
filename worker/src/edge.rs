@@ -20,8 +20,10 @@
 
 use crate::error::{Error, SettlementError};
 use crate::handler::serve;
-use crate::types::{NttCallPriceMicrosUsdc, RequestBytes, SellerPubkey};
-use crate::x402::{FacilitatorUrl, PaymentEnvelope, settle_async, verify_async};
+use crate::types::RequestBytes;
+use crate::x402::{
+    FacilitatorUrl, PaymentEnvelope, PaymentRequirementsJson, settle_async, verify_async,
+};
 use alloc::format;
 use alloc::string::{String, ToString};
 use worker::{Context, Env, Request, Response, Result as WorkerResult, event};
@@ -29,6 +31,9 @@ use worker::{Context, Env, Request, Response, Result as WorkerResult, event};
 const X_PAYMENT_HEADER: &str = "X-Payment";
 const X_PAYMENT_RESPONSE_HEADER: &str = "X-Payment-Response";
 const FREE_TIER_MAX_MICROS_USDC: u64 = 10_000;
+const RESOURCE_URL: &str = "https://ntt-x402.isurvivable.workers.dev/ntt";
+const TIER_DESCRIPTION: &str = "Goldilocks NTT compute, log2(n) <= 12 on the free tier";
+const MAX_TIMEOUT_SECONDS: u32 = 300;
 
 const SERVICE_DESCRIPTOR: &str = r#"{
   "service": "ntt-x402",
@@ -104,19 +109,18 @@ async fn handle_ntt(req: Request, env: &Env) -> WorkerResult<Response> {
     let payment_value = req.headers().get(X_PAYMENT_HEADER).ok().flatten();
     match payment_value {
         Some(envelope_b64) => settle_and_serve(req, env, envelope_b64).await,
-        None => respond_payment_required(),
+        None => respond_payment_required(env),
     }
 }
 
 async fn settle_and_serve(req: Request, env: &Env, envelope_b64: String) -> WorkerResult<Response> {
     let config = read_settlement_config(env);
     match config {
-        Ok((facilitator, seller)) => {
+        Ok((facilitator, requirements)) => {
             let envelope = PaymentEnvelope::new(envelope_b64);
-            let expected = NttCallPriceMicrosUsdc::new(FREE_TIER_MAX_MICROS_USDC);
-            let verified = verify_async(&facilitator, &envelope, expected, &seller).await;
+            let verified = verify_async(&facilitator, &envelope, &requirements).await;
             match verified {
-                Ok(()) => after_verify(req, &facilitator, &envelope, &seller).await,
+                Ok(()) => after_verify(req, &facilitator, &envelope, &requirements).await,
                 Err(e) => domain_error_response(&e),
             }
         }
@@ -128,14 +132,14 @@ async fn after_verify(
     req: Request,
     facilitator: &FacilitatorUrl,
     envelope: &PaymentEnvelope,
-    seller: &SellerPubkey,
+    requirements: &PaymentRequirementsJson,
 ) -> WorkerResult<Response> {
     let body = read_request_body(req).await?;
     let request_bytes = RequestBytes::new(body);
     let serve_result = serve(&request_bytes).run();
     match serve_result {
         Ok(response_bytes) => {
-            let settled = settle_async(facilitator, envelope, seller).await;
+            let settled = settle_async(facilitator, envelope, requirements).await;
             match settled {
                 Ok(tx) => Response::from_bytes(response_bytes.into_inner()).map(|r| {
                     r.with_headers(payment_response_headers(&payment_response_value(&tx)))
@@ -155,7 +159,7 @@ async fn read_request_body(mut req: Request) -> WorkerResult<alloc::vec::Vec<u8>
     req.bytes().await
 }
 
-fn read_settlement_config(env: &Env) -> Result<(FacilitatorUrl, SellerPubkey), Error> {
+fn read_settlement_config(env: &Env) -> Result<(FacilitatorUrl, PaymentRequirementsJson), Error> {
     let facilitator = env
         .var("FACILITATOR_URL")
         .map_err(|e| {
@@ -164,15 +168,57 @@ fn read_settlement_config(env: &Env) -> Result<(FacilitatorUrl, SellerPubkey), E
             )))
         })?
         .to_string();
-    let seller = env
-        .var("SELLER_PUBKEY")
-        .map_err(|e| {
-            Error::Settlement(SettlementError::Transport(format!(
-                "SELLER_PUBKEY var: {e}"
-            )))
-        })?
-        .to_string();
-    Ok((FacilitatorUrl::new(facilitator), SellerPubkey::new(seller)))
+    let requirements = build_requirements_json(env);
+    Ok((FacilitatorUrl::new(facilitator), requirements))
+}
+
+/// Build the canonical paymentRequirements JSON object.  This MUST
+/// match byte-for-byte what is inlined into the 402 envelope's
+/// `accepts[0]` slot, since the facilitator's deep-equality check on
+/// `paymentRequirements` is strict.
+fn build_requirements_json(env: &Env) -> PaymentRequirementsJson {
+    let seller_pubkey = env.var("SELLER_PUBKEY").map_or_else(
+        |_| "11111111111111111111111111111111".to_string(),
+        |v| v.to_string(),
+    );
+    let usdc_mint = env.var("USDC_MINT").map_or_else(
+        |_| "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU".to_string(),
+        |v| v.to_string(),
+    );
+    let fee_payer = env.var("FACILITATOR_FEE_PAYER").map_or_else(
+        |_| "CKPKJWNdJEqa81x7CkZ14BVPiY6y16Sxs7owznqtWYp5".to_string(),
+        |v| v.to_string(),
+    );
+    let network = env.var("SOLANA_CLUSTER").ok().map_or("solana", |v| {
+        if v.to_string() == "devnet" {
+            "solana-devnet"
+        } else {
+            "solana"
+        }
+    });
+    let json = format!(
+        concat!(
+            r#"{{"scheme":"exact","#,
+            r#""network":"{network}","#,
+            r#""asset":"{usdc_mint}","#,
+            r#""maxAmountRequired":"{amount}","#,
+            r#""resource":"{resource}","#,
+            r#""description":"{description}","#,
+            r#""payTo":"{seller}","#,
+            r#""maxTimeoutSeconds":{timeout},"#,
+            r#""extra":{{"feePayer":"{fee_payer}"}}"#,
+            r#"}}"#
+        ),
+        network = network,
+        usdc_mint = usdc_mint,
+        amount = FREE_TIER_MAX_MICROS_USDC,
+        resource = RESOURCE_URL,
+        description = TIER_DESCRIPTION,
+        seller = seller_pubkey,
+        timeout = MAX_TIMEOUT_SECONDS,
+        fee_payer = fee_payer,
+    );
+    PaymentRequirementsJson::new(json)
 }
 
 fn payment_response_value(tx: &crate::types::PaymentTxHash) -> String {
@@ -197,21 +243,17 @@ fn error_status_and_body(err: &Error) -> (u16, String) {
     }
 }
 
-fn respond_payment_required() -> WorkerResult<Response> {
-    let body = r#"{
-  "x402Version": "1",
-  "accepts": [
-    {
-      "scheme": "exact",
-      "network": "solana",
-      "asset": "USDC",
-      "maxAmountRequired": "10000",
-      "resource": "/ntt",
-      "description": "Goldilocks NTT compute, log2(n) <= 12 on the free tier"
-    }
-  ]
-}"#;
-    Response::error(body.to_string(), 402).map(|r| r.with_headers(json_headers()))
+fn respond_payment_required(env: &Env) -> WorkerResult<Response> {
+    // Wrap the canonical paymentRequirements JSON in the V1
+    // PaymentRequired envelope.  The same requirements bytes are
+    // re-used by verify_async/settle_async so the facilitator's
+    // deep-equality check passes.
+    let requirements = build_requirements_json(env);
+    let body = format!(
+        r#"{{"x402Version":1,"accepts":[{}]}}"#,
+        requirements.as_str()
+    );
+    Response::error(body, 402).map(|r| r.with_headers(json_headers()))
 }
 
 fn json_ok(body: &str) -> WorkerResult<Response> {

@@ -10,6 +10,10 @@
 .dev.vars
 node_modules/
 
+# tsx / TypeScript caches inside tools/
+tools/**/dist/
+tools/**/*.tsbuildinfo
+
 # Anchor
 .anchor/
 test-ledger/

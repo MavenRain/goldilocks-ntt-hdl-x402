@@ -1,24 +1,34 @@
-//! Solana-mainnet x402 facilitator client.
+//! x402 facilitator client.
 //!
 //! Pure helpers (`build_verify_body`, `parse_verify_response`,
-//! `build_settle_body`, `parse_settle_response`) handle all
-//! request/response shaping and are unit-tested on the host.  The
-//! `verify_async` and `settle_async` entry points are gated to
-//! `wasm32` because they call `worker::Fetch` from inside the
-//! Cloudflare Workers runtime; on the host they don't exist, which
-//! keeps `cargo check` and `cargo test` portable.
+//! `build_settle_body`, `parse_settle_response`, `decode_payment_payload`)
+//! handle all request/response shaping and are unit-tested on the
+//! host.  The `verify_async` and `settle_async` entry points are
+//! gated to `wasm32` because they call `worker::Fetch` from inside
+//! the Cloudflare Workers runtime.
 //!
 //! Edge.rs awaits these around `handler::serve`, so the Io-pure core
 //! never has to know that an async hop happened.
+//!
+//! Wire shape (V1, per `@x402/core` zod schemas):
+//! - The buyer's `X-Payment` header value is `safeBase64Encode(JSON.stringify(paymentPayload))`.
+//! - The facilitator's `/verify` and `/settle` accept
+//!   `{"x402Version":1,"paymentPayload":<decoded>,"paymentRequirements":<requirements>}`.
+//! - The `paymentRequirements` value must match the JSON the seller
+//!   advertised in the `accepts[0]` slot of the original 402 envelope,
+//!   so callers pre-build it once (in `edge.rs`) and pass it to both
+//!   the 402 response and the verify/settle bodies via
+//!   [`PaymentRequirementsJson`].
 
 use crate::error::{Error, SettlementError};
-use crate::types::{NttCallPriceMicrosUsdc, PaymentTxHash, SellerPubkey};
+use crate::types::PaymentTxHash;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use base64::Engine;
 
 /// Opaque envelope encoding the buyer's signed `X-Payment` header.
-/// In x402 the header value is a base64-encoded EIP-712-style payload,
+/// In x402 V1 the header value is `safeBase64Encode(JSON.stringify(paymentPayload))`,
 /// so the canonical in-memory form is the original base64 string.
 #[derive(Debug, Clone)]
 pub struct PaymentEnvelope(String);
@@ -35,7 +45,26 @@ impl PaymentEnvelope {
     }
 }
 
-/// Facilitator endpoint URL (e.g. `https://api.cdp.coinbase.com/x402/solana-devnet/v1`).
+/// Pre-built `paymentRequirements` JSON object string.  This is the
+/// exact byte sequence advertised in the seller's 402 envelope's
+/// `accepts[0]` slot, and must be inlined verbatim into the verify
+/// and settle bodies so the facilitator's deep-equality check passes.
+#[derive(Debug, Clone)]
+pub struct PaymentRequirementsJson(String);
+
+impl PaymentRequirementsJson {
+    #[must_use]
+    pub const fn new(json: String) -> Self {
+        Self(json)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Facilitator endpoint URL (e.g. `https://www.x402.org/facilitator`).
 #[derive(Debug, Clone)]
 pub struct FacilitatorUrl(String);
 
@@ -51,51 +80,78 @@ impl FacilitatorUrl {
     }
 }
 
-/// Build the JSON body for a `POST /verify` call to the CDP facilitator.
-/// The shape is the x402 v1 verification request envelope.
-#[must_use]
-pub fn build_verify_body(
-    envelope: &PaymentEnvelope,
-    expected: NttCallPriceMicrosUsdc,
-    seller: &SellerPubkey,
-) -> String {
-    format!(
-        concat!(
-            r#"{{"x402Version":"1","#,
-            r#""paymentHeader":"{}","#,
-            r#""paymentRequirements":{{"#,
-            r#""scheme":"exact","#,
-            r#""network":"solana","#,
-            r#""asset":"USDC","#,
-            r#""maxAmountRequired":"{}","#,
-            r#""resource":"/ntt","#,
-            r#""payTo":"{}""#,
-            r#"}}}}"#,
-        ),
-        envelope.as_str(),
-        expected.get(),
-        seller.as_str(),
-    )
+/// Decode the buyer's `X-Payment` header value into the inner
+/// paymentPayload JSON.  The result is a JSON object string, ready
+/// to inline into a verify or settle body.
+///
+/// # Errors
+///
+/// Returns [`SettlementError::VerifyRejected`] when the value is not
+/// valid base64 or the decoded bytes are not valid UTF-8.
+pub fn decode_payment_payload(envelope_b64: &str) -> Result<String, Error> {
+    base64::engine::general_purpose::STANDARD
+        .decode(envelope_b64.as_bytes())
+        .map_err(|e| {
+            Error::Settlement(SettlementError::VerifyRejected(format!(
+                "X-Payment base64 decode: {e}"
+            )))
+        })
+        .and_then(|bytes| {
+            String::from_utf8(bytes).map_err(|e| {
+                Error::Settlement(SettlementError::VerifyRejected(format!(
+                    "X-Payment utf8 decode: {e}"
+                )))
+            })
+        })
 }
 
-/// Build the JSON body for a `POST /settle` call to the CDP facilitator.
-#[must_use]
-pub fn build_settle_body(envelope: &PaymentEnvelope, seller: &SellerPubkey) -> String {
-    format!(
-        concat!(
-            r#"{{"x402Version":"1","#,
-            r#""paymentHeader":"{}","#,
-            r#""paymentRequirements":{{"#,
-            r#""scheme":"exact","#,
-            r#""network":"solana","#,
-            r#""asset":"USDC","#,
-            r#""resource":"/ntt","#,
-            r#""payTo":"{}""#,
-            r#"}}}}"#,
-        ),
-        envelope.as_str(),
-        seller.as_str(),
-    )
+/// Build the JSON body for `POST /verify`.  Inlines the buyer's
+/// decoded paymentPayload and the seller's pre-built
+/// paymentRequirements.
+///
+/// # Errors
+///
+/// Returns [`SettlementError::VerifyRejected`] when the envelope
+/// cannot be base64-decoded.
+pub fn build_verify_body(
+    envelope: &PaymentEnvelope,
+    requirements: &PaymentRequirementsJson,
+) -> Result<String, Error> {
+    decode_payment_payload(envelope.as_str()).map(|payload_json| {
+        format!(
+            r#"{{"x402Version":1,"paymentPayload":{payload_json},"paymentRequirements":{requirements}}}"#,
+            payload_json = payload_json,
+            requirements = requirements.as_str(),
+        )
+    })
+}
+
+/// Build the JSON body for `POST /settle`.  Same shape as the verify
+/// body; the facilitator uses both the payload and the requirements
+/// to construct and submit the on-chain transaction.
+///
+/// # Errors
+///
+/// Returns [`SettlementError::SettleRejected`] when the envelope
+/// cannot be base64-decoded.
+pub fn build_settle_body(
+    envelope: &PaymentEnvelope,
+    requirements: &PaymentRequirementsJson,
+) -> Result<String, Error> {
+    decode_payment_payload(envelope.as_str())
+        .map_err(|e| match e {
+            Error::Settlement(SettlementError::VerifyRejected(detail)) => {
+                Error::Settlement(SettlementError::SettleRejected(detail))
+            }
+            other => other,
+        })
+        .map(|payload_json| {
+            format!(
+                r#"{{"x402Version":1,"paymentPayload":{payload_json},"paymentRequirements":{requirements}}}"#,
+                payload_json = payload_json,
+                requirements = requirements.as_str(),
+            )
+        })
 }
 
 /// Parse the facilitator's `/verify` response.  Returns `Ok(())` if
@@ -179,11 +235,11 @@ fn decode_solana_signature(s: &str) -> Result<[u8; 64], Error> {
 #[cfg(target_arch = "wasm32")]
 mod async_io {
     use super::{
-        FacilitatorUrl, PaymentEnvelope, build_settle_body, build_verify_body,
-        parse_settle_response, parse_verify_response,
+        FacilitatorUrl, PaymentEnvelope, PaymentRequirementsJson, build_settle_body,
+        build_verify_body, parse_settle_response, parse_verify_response,
     };
     use crate::error::{Error, SettlementError};
-    use crate::types::{NttCallPriceMicrosUsdc, PaymentTxHash, SellerPubkey};
+    use crate::types::PaymentTxHash;
     use alloc::format;
     use alloc::string::String;
     use worker::{Fetch, Headers, Method, Request, RequestInit};
@@ -197,10 +253,9 @@ mod async_io {
     pub async fn verify_async(
         facilitator: &FacilitatorUrl,
         envelope: &PaymentEnvelope,
-        expected: NttCallPriceMicrosUsdc,
-        seller: &SellerPubkey,
+        requirements: &PaymentRequirementsJson,
     ) -> Result<(), Error> {
-        let body = build_verify_body(envelope, expected, seller);
+        let body = build_verify_body(envelope, requirements)?;
         let url = format!("{}/verify", facilitator.as_str());
         post_json(&url, body)
             .await
@@ -217,9 +272,9 @@ mod async_io {
     pub async fn settle_async(
         facilitator: &FacilitatorUrl,
         envelope: &PaymentEnvelope,
-        seller: &SellerPubkey,
+        requirements: &PaymentRequirementsJson,
     ) -> Result<PaymentTxHash, Error> {
-        let body = build_settle_body(envelope, seller);
+        let body = build_settle_body(envelope, requirements)?;
         let url = format!("{}/settle", facilitator.as_str());
         post_json(&url, body)
             .await
@@ -271,34 +326,59 @@ mod tests {
     use super::*;
     use alloc::string::ToString;
 
-    fn envelope(s: &str) -> PaymentEnvelope {
-        PaymentEnvelope::new(s.to_string())
+    fn envelope_for(payload_json: &str) -> PaymentEnvelope {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload_json.as_bytes());
+        PaymentEnvelope::new(b64)
     }
 
-    fn seller(s: &str) -> SellerPubkey {
-        SellerPubkey::new(s.to_string())
-    }
-
-    #[test]
-    fn verify_body_round_trips_through_field_extractor() -> Result<(), String> {
-        let env = envelope("dGVzdA==");
-        let s = seller("11111111111111111111111111111111");
-        let body = build_verify_body(&env, NttCallPriceMicrosUsdc::new(10_000), &s);
-        let normalized = strip_whitespace(&body);
-        extract_string_field(&normalized, "paymentHeader")
-            .filter(|v| v == "dGVzdA==")
-            .map(|_| ())
-            .ok_or_else(|| format!("paymentHeader not found in body: {body}"))
+    fn requirements_with_amount(amount: &str) -> PaymentRequirementsJson {
+        PaymentRequirementsJson::new(format!(
+            r#"{{"scheme":"exact","network":"solana-devnet","asset":"4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU","maxAmountRequired":"{amount}","resource":"https://example.com/x","description":"x","payTo":"11111111111111111111111111111111","maxTimeoutSeconds":300,"extra":{{"feePayer":"CKPKJWNdJEqa81x7CkZ14BVPiY6y16Sxs7owznqtWYp5"}}}}"#
+        ))
     }
 
     #[test]
-    fn verify_body_carries_expected_amount() -> Result<(), String> {
-        let env = envelope("AAAA");
-        let s = seller("Sysvar1nstructions1111111111111111111111111");
-        let body = build_verify_body(&env, NttCallPriceMicrosUsdc::new(123_456), &s);
-        body.contains(r#""maxAmountRequired":"123456""#)
+    fn decode_payment_payload_extracts_inner_json() -> Result<(), String> {
+        let env = envelope_for(r#"{"x402Version":1,"scheme":"exact"}"#);
+        let decoded = decode_payment_payload(env.as_str()).map_err(|e| format!("decode: {e}"))?;
+        (decoded == r#"{"x402Version":1,"scheme":"exact"}"#)
             .then_some(())
-            .ok_or_else(|| format!("amount not in body: {body}"))
+            .ok_or_else(|| format!("decoded mismatch: {decoded}"))
+    }
+
+    #[test]
+    fn decode_payment_payload_rejects_bad_base64() -> Result<(), String> {
+        decode_payment_payload("not!base64!")
+            .err()
+            .filter(|e| matches!(e, Error::Settlement(SettlementError::VerifyRejected(_))))
+            .map(|_| ())
+            .ok_or_else(|| "expected VerifyRejected on bad base64".to_string())
+    }
+
+    #[test]
+    fn verify_body_inlines_payload_and_requirements() -> Result<(), String> {
+        let env =
+            envelope_for(r#"{"x402Version":1,"scheme":"exact","payload":{"transaction":"abc"}}"#);
+        let req = requirements_with_amount("10000");
+        let body = build_verify_body(&env, &req).map_err(|e| format!("build: {e}"))?;
+        let has_payload = body.contains(r#""paymentPayload":{"x402Version":1,"scheme":"exact","payload":{"transaction":"abc"}}"#);
+        let has_requirements =
+            body.contains(r#""paymentRequirements":{"scheme":"exact","network":"solana-devnet""#);
+        let has_version = body.contains(r#""x402Version":1"#);
+        (has_payload && has_requirements && has_version)
+            .then_some(())
+            .ok_or_else(|| format!("body missing expected fields: {body}"))
+    }
+
+    #[test]
+    fn settle_body_matches_verify_body_shape() -> Result<(), String> {
+        let env = envelope_for(r#"{"x402Version":1,"scheme":"exact"}"#);
+        let req = requirements_with_amount("10000");
+        let v = build_verify_body(&env, &req).map_err(|e| format!("verify: {e}"))?;
+        let s = build_settle_body(&env, &req).map_err(|e| format!("settle: {e}"))?;
+        (v == s)
+            .then_some(())
+            .ok_or_else(|| format!("verify and settle bodies differ:\n  v={v}\n  s={s}"))
     }
 
     #[test]
@@ -353,15 +433,5 @@ mod tests {
             .filter(|e| matches!(e, Error::Settlement(SettlementError::SettleRejected(_))))
             .map(|_| ())
             .ok_or_else(|| "expected SettleRejected for short signature".to_string())
-    }
-
-    #[test]
-    fn settle_body_contains_seller() -> Result<(), String> {
-        let env = envelope("Zm9v");
-        let s = seller("ABCDEFGHJKLMNPQRSTUVWXYZ1234567890abcdefghi");
-        let body = build_settle_body(&env, &s);
-        body.contains(r#""payTo":"ABCDEFGHJKLMNPQRSTUVWXYZ1234567890abcdefghi""#)
-            .then_some(())
-            .ok_or_else(|| format!("payTo missing from body: {body}"))
     }
 }

@@ -50,6 +50,9 @@ facilitator eats gas), compute on Cloudflare Workers free tier.
   donor-registry/        donor URLs + revenue-share PDAs
   pricing-schedule/      immutable pricing tier config
 /scripts/                Verilator-WASM build pipeline (placeholder)
+/tools/
+  test-client/           TypeScript buyer that signs an x402 envelope and
+                         calls POST /ntt to validate verify + settle
 ```
 
 ## Conventions

@@ -14,13 +14,20 @@ SOLANA_CLUSTER = "devnet"
 RECEIPT_REGISTRY_PROGRAM_ID = "Recpt11111111111111111111111111111111111111"
 DONOR_REGISTRY_PROGRAM_ID = "Dnr11111111111111111111111111111111111111111"
 PRICING_SCHEDULE_PROGRAM_ID = "Prc11111111111111111111111111111111111111111"
-# v0.1 ships against the CDP Solana-devnet facilitator so the first
-# paid call can be smoke-tested against real x402 plumbing without
-# touching mainnet USDC.  Flip to the mainnet facilitator
-# (https://api.cdp.coinbase.com/x402/solana/v1) only after end-to-end
-# devnet runs are clean.
-FACILITATOR_URL = "https://api.cdp.coinbase.com/x402/solana-devnet/v1"
+# v0.1 ships against the public x402.org facilitator (no auth) so the
+# first paid call can be smoke-tested without provisioning CDP API
+# keys.  The CDP facilitator at https://api.cdp.coinbase.com/platform/v2/x402
+# is the production target; it requires API-key auth and is wired in
+# v0.2 once the CDP keys are added as wrangler secrets.
+FACILITATOR_URL = "https://www.x402.org/facilitator"
 SELLER_PUBKEY = "6zP7sAnE1X6MuRcxPR7KQuABfTJTxacEGFvJ9LMtECY"
+# USDC mint on Solana devnet (matches Circle's faucet drips).
+# Mainnet flip swaps to EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v.
+USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+# Facilitator-advertised fee payer (from /supported response,
+# extra.feePayer for the solana-devnet kind).  Buyers must include
+# this in their signed transaction so the facilitator pays gas.
+FACILITATOR_FEE_PAYER = "CKPKJWNdJEqa81x7CkZ14BVPiY6y16Sxs7owznqtWYp5"
 MAX_DEGREE_LOG2 = "12"
 
 # Custom domain (`ntt.isurvivable.cv`) requires isurvivable.cv to be a
