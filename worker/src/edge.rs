@@ -52,19 +52,10 @@ const SERVICE_DESCRIPTOR: &str = r#"{
   ]
 }"#;
 
-const BAZAAR_MANIFEST: &str = r#"{
-  "x402Version": "1",
-  "endpoints": [
-    {
-      "method": "POST",
-      "path": "/ntt",
-      "asset": "USDC",
-      "network": "solana",
-      "maxAmountMicros": 10000,
-      "description": "Goldilocks NTT compute (forward and inverse), log2(n) <= 12 on the free tier"
-    }
-  ]
-}"#;
+const SAMPLE_REQUEST: &str =
+    r#"{"field":"Goldilocks","direction":"Forward","degree_log2":2,"coefficients":[1,2,3,4]}"#;
+
+const SAMPLE_RESPONSE_SHAPE: &str = r#"{"output":["<u64 as string>"],"proof_of_execution":"<32-byte sha256 hex>","backend":"Wasm|Donor|CloudFpga","field":"Goldilocks|BabyBear","direction":"Forward|Inverse","degree_log2":"<0..30>"}"#;
 
 /// Top-level Workers fetch handler.  Sets the panic hook once per
 /// isolate, then dispatches by method and path.
@@ -87,7 +78,10 @@ async fn dispatch(req: Request, env: Env) -> WorkerResult<Response> {
     let method = req.method();
     match (method, path.as_str()) {
         (worker::Method::Get, "/") => json_ok(SERVICE_DESCRIPTOR),
-        (worker::Method::Get, "/.well-known/x402") => json_ok(BAZAAR_MANIFEST),
+        (worker::Method::Get, "/.well-known/x402") => {
+            let manifest = build_bazaar_manifest(&env);
+            json_ok(&manifest)
+        }
         (worker::Method::Post, "/ntt") => handle_ntt(req, &env).await,
         (
             worker::Method::Get
@@ -224,6 +218,32 @@ fn build_requirements_json(env: &Env) -> PaymentRequirementsJson {
 fn payment_response_value(tx: &crate::types::PaymentTxHash) -> String {
     let signature_b58 = bs58::encode(tx.as_bytes()).into_string();
     format!(r#"{{"network":"solana","transaction":"{signature_b58}"}}"#)
+}
+
+/// Build the `/.well-known/x402` Bazaar discovery manifest dynamically
+/// from env vars, so the manifest's `endpoints[0]` matches the V1
+/// paymentRequirements that the 402 envelope and the verify/settle
+/// bodies use.  Adds a `sampleRequest` and `sampleResponseShape`
+/// alongside the standard fields so agents and humans can grep for
+/// the wire format without a separate doc page.
+fn build_bazaar_manifest(env: &Env) -> String {
+    let requirements = build_requirements_json(env);
+    format!(
+        concat!(
+            r#"{{"x402Version":1,"#,
+            r#""service":"ntt-x402","#,
+            r#""version":"0.1.0","#,
+            r#""endpoints":[{{"#,
+            r#""method":"POST","#,
+            r#""accepts":{requirements},"#,
+            r#""sampleRequest":{sample_request},"#,
+            r#""sampleResponseShape":{sample_response_shape}"#,
+            r#"}}]}}"#
+        ),
+        requirements = requirements.as_str(),
+        sample_request = SAMPLE_REQUEST,
+        sample_response_shape = SAMPLE_RESPONSE_SHAPE,
+    )
 }
 
 fn domain_error_response(err: &Error) -> WorkerResult<Response> {
